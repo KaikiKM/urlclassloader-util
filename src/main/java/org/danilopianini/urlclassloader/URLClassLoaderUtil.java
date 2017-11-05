@@ -1,19 +1,15 @@
 package org.danilopianini.urlclassloader;
 
 import java.io.File;
+import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URL;
-import java.util.Iterator;
+import java.net.URLClassLoader;
 import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-
-import sun.misc.URLClassPath;
 
 /**
  * Utility to manipulate classpath. The implementation relies heavily on
@@ -136,18 +132,8 @@ public final class URLClassLoaderUtil {
      *            the {@link ClassLoader}
      */
     public static void addLast(final URL url, final ClassLoader cl) {
-        doOn(new Op() {
-            @Override
-            public void run(final URLClassPath cl) {
-                try {
-                    final Method add = cl.getClass().getMethod("addURL", URL.class);
-                    add.setAccessible(true);
-                    add.invoke(cl, url);
-                } catch (NoSuchMethodException | SecurityException | IllegalAccessException | IllegalArgumentException | InvocationTargetException e) {
-                    throw new IllegalStateException(e);
-                }
-            }
-        }, cl);
+        final AccessibleClassLoader ac = new AccessibleClassLoader(cl);
+        ac.addURL(url);
     }
 
     /**
@@ -231,7 +217,7 @@ public final class URLClassLoaderUtil {
                 urlList.remove(url);
             }
         }, cl);
-        doOn(new Op() {
+        /*doOn(new Op() {
             @Override
             public void run(final URLClassPath cl) {
                 try {
@@ -269,7 +255,7 @@ public final class URLClassLoaderUtil {
                     throw new IllegalStateException(e);
                 }
             }
-        }, cl);
+        }, cl);*/
     }
 
     /**
@@ -335,19 +321,7 @@ public final class URLClassLoaderUtil {
     }
 
     private static void doOn(final Op operation, final ClassLoader loader) {
-        try {
-            for (Class<?> clazz = Objects.requireNonNull(loader).getClass(); !Object.class.equals(clazz); clazz = clazz.getSuperclass()) {
-                for (final Field potentialURLClasspath : clazz.getDeclaredFields()) {
-                    if (URLClassPath.class.isAssignableFrom(potentialURLClasspath.getType())) {
-                        potentialURLClasspath.setAccessible(true);
-                        final URLClassPath urlClasspath = (URLClassPath) potentialURLClasspath.get(loader);
-                        operation.run(urlClasspath);
-                    }
-                }
-            }
-        } catch (IllegalAccessException e) {
-            throw new IllegalStateException(e);
-        }
+        operation.run(new URLClassLoader(new URL[0], loader));
     }
 
     private static URL toURL(final URI uri) {
@@ -369,34 +343,47 @@ public final class URLClassLoaderUtil {
     private static URL toURL(final File file) {
         return toURL(file.toURI());
     }
+    
+    private static class AccessibleClassLoader extends URLClassLoader {
+
+        public AccessibleClassLoader(ClassLoader parent) {
+            super(new URL[0], parent);
+        }
+        
+        public void addURL(URL url) {
+            super.addURL(url);
+        }
+        
+    }
 
     private abstract static class OpOnLists extends Op {
         @Override
-        public final void run(final URLClassPath cl) {
-            for (final Field potentialURLList : cl.getClass().getDeclaredFields()) {
-                if (!Modifier.isStatic(potentialURLList.getModifiers()) && List.class.isAssignableFrom(potentialURLList.getType())) {
-                    potentialURLList.setAccessible(true);
-                    try {
-                        final List<?> theList = (List<?>) potentialURLList.get(cl);
-                        if (theList.isEmpty() || theList.get(0) instanceof URL) {
-                            /*
-                             * This is most likely one of our targets
-                             */
-                            @SuppressWarnings("unchecked")
-                            final List<URL> urlList = (List<URL>) theList;
-                            doOnList(urlList);
-                        }
-                    } catch (IllegalArgumentException | IllegalAccessException e) {
-                        throw new IllegalStateException(e);
-                    }
+        public final void run(final URLClassLoader cl) {
+            Field cp;
+            try {
+                cp = cl.getClass().getField("ucp");
+                cp.setAccessible(true);
+                Object classpath = cp.get(cl);
+                Field urls = classpath.getClass().getField("path");
+                final List<?> theList = (List<?>) urls.get(classpath);
+                if (theList.isEmpty() || theList.get(0) instanceof URL) {
+                    /*
+                     * This is most likely one of our targets
+                     */
+                    @SuppressWarnings("unchecked")
+                    final List<URL> urlList = (List<URL>) theList;
+                    doOnList(urlList);
                 }
+            } catch (NoSuchFieldException | SecurityException | IllegalArgumentException | IllegalAccessException e1) {
+                // TODO Auto-generated catch block
+                e1.printStackTrace();
             }
         }
         protected abstract void doOnList(List<URL> urlList);
     }
 
     private abstract static class Op {
-        public abstract void run(URLClassPath l);
+        public abstract void run(java.net.URLClassLoader l);
     }
 
 }
